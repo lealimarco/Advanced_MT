@@ -1,0 +1,70 @@
+# ============================
+# 🏗️ Core Dependencies
+# ============================
+
+# Data processing and analysis
+pandas>=1.5.0
+openpyxl>=3.0.0  # For Excel file support
+
+# Natural Language Processing
+spacy>=3.5.0
+nltk>=3.8.0
+
+# Machine Translation
+googletrans==3.1.0a0
+requests>=2.28.0
+
+# Deep Learning & Transformers
+torch>=2.0.0
+transformers>=4.30.0
+accelerate>=0.20.0
+
+# Evaluation Metrics
+rouge-score>=0.1.2
+bert-score>=0.3.13
+nltk>=3.8.0
+
+# ============================
+# 🔧 Optional Dependencies
+# ============================
+
+# Alternative MT Backends
+# libretranslate  # Install separately via pip or Docker
+# deepl  # Install via: pip install deepl
+
+# LLM Backend (Ollama)
+# ollama  # Install via: pip install ollama
+
+# ============================
+# 📊 Development & Testing
+# ============================
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Code quality
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+
+# Type hints
+typing-extensions>=4.5.0
+
+# ============================
+# 🎯 spaCy Language Models
+# ============================
+
+# English model (required)
+# python -m spacy download en_core_web_sm
+
+# Italian model (required)  
+# python -m spacy download it_core_news_sm
+
+# ============================
+# 🤖 NLTK Data Requirements
+# ============================
+
+# Required NLTK data packages
+# python -m nltk.downloader punkt
+# python -m nltk.downloader averaged_perceptron_tagger
