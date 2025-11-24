@@ -1428,11 +1428,24 @@ def compute_treu_metric(reference: str, candidate: str, glossary: dict, target_l
     ref_tokens = reference_clean.lower().split()
     cand_tokens = candidate_clean.lower().split()
     
+    # 🔥 NEW: Lemmatize candidate for terminology matching
+    cand_doc = nlp_it(candidate_clean.lower())
+    cand_lemmas = [token.lemma_.lower() for token in cand_doc]
+    cand_text_lemmatized = " ".join(cand_lemmas)
+    
     # Get Italian terms from glossary for terminology credit
     italian_glossary_terms = set()
+    italian_glossary_lemmas = {}  # 🔥 NEW: Store lemmatized versions
+    
     for eng_term, translations in glossary.items():
         if translations.get(target_lang):
-            italian_glossary_terms.add(translations[target_lang].lower())
+            it_term = translations[target_lang].lower()
+            italian_glossary_terms.add(it_term)
+            
+            # 🔥 NEW: Also store lemmatized version
+            it_doc = nlp_it(it_term)
+            lemmatized_it_term = " ".join([token.lemma_.lower() for token in it_doc])
+            italian_glossary_lemmas[it_term] = lemmatized_it_term
     
     # Step 1: Calculate orthographic overlap (Equation 6 in paper)
     shared_vocab = set(ref_tokens) & set(cand_tokens)
@@ -1449,19 +1462,21 @@ def compute_treu_metric(reference: str, candidate: str, glossary: dict, target_l
     injected_terms = []
     
     for term in italian_glossary_terms:
-        term_tokens = term.split()
-        # Check if term appears in candidate but not in reference as exact string
+        # 🔥 CHANGED: Use lemmatized matching
+        lemmatized_term = italian_glossary_lemmas[term]
+        term_tokens = lemmatized_term.split()
+        
+        # Check if lemmatized term appears in lemmatized candidate
         if len(term_tokens) == 1:
-            # Single word term
-            if term in cand_tokens:  # It gives ALWAYS credit if the term is in the glossary
-                terminology_credit += cand_tokens.count(term)
-                injected_terms.append(term)
+            # Single word term - check in lemmatized tokens
+            if lemmatized_term in cand_lemmas:
+                terminology_credit += cand_lemmas.count(lemmatized_term)
+                injected_terms.append(term)  # Store original term for display
         else:
-            # Multi-word term
-            term_str = " ".join(term_tokens)
-            if term_str in candidate_clean.lower():
-                terminology_credit += 1  # Count each occurrence once
-                injected_terms.append(term_str)
+            # Multi-word term - check in lemmatized candidate text
+            if lemmatized_term in cand_text_lemmatized:
+                terminology_credit += 1
+                injected_terms.append(term)  # Store original term for display
     
     # Step 3: Complete overlap O (Equation 8)
     complete_overlap = overlap + terminology_credit
@@ -1505,17 +1520,240 @@ def compute_treu_metric(reference: str, candidate: str, glossary: dict, target_l
         "total_ref_tokens": total_ref_tokens,
         "total_cand_tokens": total_cand_tokens
     }
+
+
+
+# ============================
+# 📈 9. Results Collection & CSV Export
+# ============================
+
+import csv
+import os
+from datetime import datetime
+import statistics
+
+class ResultsCollector:
+    def __init__(self, output_dir="results"):
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Create unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.csv_path = os.path.join(output_dir, f"translation_results_{timestamp}.csv")
+        self.all_results = []
+        
+    def init_csv(self):
+        """Initialize CSV file with headers"""
+        headers = [
+            "sentence_id", "run_id", "english_sentence", "official_translation",
+            "raw_mt", "mt_glossary", "omnigec", "llm", "omnigec_llm",
+            "bleu_raw_mt", "bleu_omnigec", "bleu_llm", "bleu_omnigec_llm",
+            "bert_raw_mt", "bert_omnigec", "bert_llm", "bert_omnigec_llm", 
+            "treu_f1_raw_mt", "treu_f1_omnigec", "treu_f1_llm", "treu_f1_omnigec_llm",
+            "rougeL_raw_mt", "rougeL_omnigec", "rougeL_llm", "rougeL_omnigec_llm",
+            "avg_raw_mt", "avg_omnigec", "avg_llm", "avg_omnigec_llm",
+            "best_approach"
+        ]
+        
+        with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+
+    def save_sentence_results(self, sentence_data):
+        """Save results for one sentence to CSV"""
+        self.all_results.append(sentence_data)
+        
+        # Calculate average scores for each approach
+        approaches = ["raw_mt", "omnigec", "llm", "omnigec_llm"]
+        for approach in approaches:
+            bleu = sentence_data[f"bleu_{approach}"]
+            bert = sentence_data[f"bert_{approach}"]
+            treu_f1 = sentence_data[f"treu_f1_{approach}"]
+            rougeL = sentence_data[f"rougeL_{approach}"]
+            
+            # Calculate average of the 4 metrics
+            avg_score = (bleu + bert + treu_f1 + rougeL) / 4
+            sentence_data[f"avg_{approach}"] = round(avg_score, 2)
+        
+        # Determine best approach for this sentence
+        avg_scores = {
+            "raw_mt": sentence_data["avg_raw_mt"],
+            "omnigec": sentence_data["avg_omnigec"],
+            "llm": sentence_data["avg_llm"],
+            "omnigec_llm": sentence_data["avg_omnigec_llm"]
+        }
+        best_approach = max(avg_scores.items(), key=lambda x: x[1])[0]
+        sentence_data["best_approach"] = best_approach
+        
+        with open(self.csv_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                sentence_data["sentence_id"],
+                sentence_data["run_id"],
+                sentence_data["english_sentence"][:500],  # Limit length
+                sentence_data["official_translation"][:500],
+                sentence_data["raw_mt"][:500],
+                sentence_data["mt_glossary"][:500],
+                sentence_data["omnigec"][:500],
+                sentence_data["llm"][:500],
+                sentence_data["omnigec_llm"][:500],
+                sentence_data["bleu_raw_mt"],
+                sentence_data["bleu_omnigec"],
+                sentence_data["bleu_llm"],
+                sentence_data["bleu_omnigec_llm"],
+                sentence_data["bert_raw_mt"],
+                sentence_data["bert_omnigec"],
+                sentence_data["bert_llm"],
+                sentence_data["bert_omnigec_llm"],
+                sentence_data["treu_f1_raw_mt"],
+                sentence_data["treu_f1_omnigec"],
+                sentence_data["treu_f1_llm"],
+                sentence_data["treu_f1_omnigec_llm"],
+                sentence_data["rougeL_raw_mt"],
+                sentence_data["rougeL_omnigec"],
+                sentence_data["rougeL_llm"],
+                sentence_data["rougeL_omnigec_llm"],
+                sentence_data["avg_raw_mt"],  # NEW
+                sentence_data["avg_omnigec"],  # NEW
+                sentence_data["avg_llm"],  # NEW
+                sentence_data["avg_omnigec_llm"],  # NEW
+                sentence_data["best_approach"]  # NEW
+            ])
     
+    def print_statistics(self):
+        """Print comprehensive statistics with final overall averages and variation metrics"""
+        if not self.all_results:
+            print("No results to analyze")
+            return
+        
+        approaches = ["raw_mt", "omnigec", "llm", "omnigec_llm"]
+        metrics = ["bleu", "bert", "treu_f1", "rougeL", "avg"]
+        
+        print(f"\n{'='*100}")
+        print(f"📊 COMPREHENSIVE STATISTICS (Across {len(self.all_results)} Sentences)")
+        print(f"{'='*100}")
+        
+        # Calculate overall averages and variations
+        overall_stats = {}
+        for approach in approaches:
+            approach_stats = {}
+            for metric in metrics:
+                metric_key = f"{metric}_{approach}"
+                values = [result[metric_key] for result in self.all_results if result[metric_key] is not None]
+                if values:
+                    approach_stats[metric] = {
+                        'mean': statistics.mean(values),
+                        'std': statistics.stdev(values) if len(values) > 1 else 0,
+                        'min': min(values),
+                        'max': max(values),
+                        'cv': (statistics.stdev(values) / statistics.mean(values) * 100) if statistics.mean(values) > 0 else 0  # Coefficient of variation
+                    }
+                else:
+                    approach_stats[metric] = {'mean': 0, 'std': 0, 'min': 0, 'max': 0, 'cv': 0}
+            overall_stats[approach] = approach_stats
+        
+        # Header with variation indicators
+        header = f"{'Approach':<15} {'BLEU':<12} {'ROUGE-L':<12} {'BERTScore':<12} {'TREU F1':<12} {'Avg':<12} {'Stability':<10}"
+        print(header)
+        print("-" * 95)
+        
+        # Display results with variation metrics
+        for approach in approaches:
+            stats = overall_stats[approach]
+            
+            # Format with mean ± std and variation percentage
+            bleu_str = f"{stats['bleu']['mean']:.1f}±{stats['bleu']['std']:.1f} ({stats['bleu']['cv']:.1f}%)"
+            rouge_str = f"{stats['rougeL']['mean']:.1f}±{stats['rougeL']['std']:.1f} ({stats['rougeL']['cv']:.1f}%)"
+            bert_str = f"{stats['bert']['mean']:.1f}±{stats['bert']['std']:.1f} ({stats['bert']['cv']:.1f}%)"
+            treu_str = f"{stats['treu_f1']['mean']:.1f}±{stats['treu_f1']['std']:.1f} ({stats['treu_f1']['cv']:.1f}%)"
+            avg_str = f"{stats['avg']['mean']:.1f}±{stats['avg']['std']:.1f} ({stats['avg']['cv']:.1f}%)"
+            
+            # Stability indicator based on coefficient of variation
+            cv_avg = stats['avg']['cv']
+            stability = "High" if cv_avg < 5 else "Medium" if cv_avg < 10 else "Low"
+            
+            line = f"{approach:<15} {bleu_str:<12} {rouge_str:<12} {bert_str:<12} {treu_str:<12} {avg_str:<12} {stability:<10}"
+            print(line)
+        
+        # Find best overall approach
+        best_approach = max(overall_stats.items(), key=lambda x: x[1]['avg']['mean'])
+        print(f"\n🏆 BEST OVERALL APPROACH: {best_approach[0]} "
+              f"({best_approach[1]['avg']['mean']:.1f}% ± {best_approach[1]['avg']['std']:.1f})")
+        
+        # Additional statistics
+        print(f"\n📈 ADDITIONAL STATISTICS:")
+        print(f"   Total sentences analyzed: {len(self.all_results)}")
+        
+        # Count how many times each approach was best
+        best_counts = {}
+        for result in self.all_results:
+            best_approach_single = result["best_approach"]
+            best_counts[best_approach_single] = best_counts.get(best_approach_single, 0) + 1
+        
+        print(f"   Best approach distribution:")
+        for approach, count in best_counts.items():
+            percentage = (count / len(self.all_results)) * 100
+            print(f"     {approach}: {count} times ({percentage:.1f}%)")
+        
+        # NEW: Detailed variation analysis
+        print(f"\n📊 DETAILED VARIATION ANALYSIS ACROSS RUNS:")
+        print(f"{'-'*80}")
+        
+        for approach in approaches:
+            stats = overall_stats[approach]
+            print(f"\n{approach.upper()}:")
+            print(f"  Score Ranges:")
+            print(f"    BLEU:     {stats['bleu']['min']:.1f} - {stats['bleu']['max']:.1f} (Δ{stats['bleu']['max']-stats['bleu']['min']:.1f})")
+            print(f"    ROUGE-L:  {stats['rougeL']['min']:.1f} - {stats['rougeL']['max']:.1f} (Δ{stats['rougeL']['max']-stats['rougeL']['min']:.1f})")
+            print(f"    BERT:     {stats['bert']['min']:.1f} - {stats['bert']['max']:.1f} (Δ{stats['bert']['max']-stats['bert']['min']:.1f})")
+            print(f"    TREU F1:  {stats['treu_f1']['min']:.1f} - {stats['treu_f1']['max']:.1f} (Δ{stats['treu_f1']['max']-stats['treu_f1']['min']:.1f})")
+            print(f"    Average:  {stats['avg']['min']:.1f} - {stats['avg']['max']:.1f} (Δ{stats['avg']['max']-stats['avg']['min']:.1f})")
+            
+            # Variation analysis
+            print(f"  Variation (% of mean):")
+            print(f"    BLEU:     ±{stats['bleu']['std']/stats['bleu']['mean']*100:.1f}% (CV: {stats['bleu']['cv']:.1f}%)")
+            print(f"    ROUGE-L:  ±{stats['rougeL']['std']/stats['rougeL']['mean']*100:.1f}% (CV: {stats['rougeL']['cv']:.1f}%)")
+            print(f"    BERT:     ±{stats['bert']['std']/stats['bert']['mean']*100:.1f}% (CV: {stats['bert']['cv']:.1f}%)")
+            print(f"    TREU F1:  ±{stats['treu_f1']['std']/stats['treu_f1']['mean']*100:.1f}% (CV: {stats['treu_f1']['cv']:.1f}%)")
+            print(f"    Average:  ±{stats['avg']['std']/stats['avg']['mean']*100:.1f}% (CV: {stats['avg']['cv']:.1f}%)")
+    
+        # NEW: Comparative analysis between approaches
+        print(f"\n📈 COMPARATIVE PERFORMANCE ANALYSIS:")
+        print(f"{'-'*80}")
+        
+        # Calculate improvement over raw_mt baseline
+        baseline = overall_stats["raw_mt"]['avg']['mean']
+        print(f"Improvement over raw_mt baseline ({baseline:.1f}%):")
+        for approach in ["omnigec", "llm", "omnigec_llm"]:
+            if approach in overall_stats:
+                approach_avg = overall_stats[approach]['avg']['mean']
+                improvement = approach_avg - baseline
+                improvement_pct = (improvement / baseline) * 100 if baseline > 0 else 0
+                print(f"  {approach}: {improvement:+.1f}% ({improvement_pct:+.1f}%)")
+        
+        # NEW: Consistency ranking
+        print(f"\n🎯 CONSISTENCY RANKING (Lower CV = More Consistent):")
+        cv_scores = {approach: overall_stats[approach]['avg']['cv'] for approach in approaches}
+        for i, (approach, cv) in enumerate(sorted(cv_scores.items(), key=lambda x: x[1])):
+            print(f"  {i+1}. {approach}: {cv:.1f}% CV")
+            
 # ============================
 # Main usage: Translation of Text
 # ============================
 
 if __name__ == "__main__":
 
-    TMX_FILE_PATH = "WRITE_YOUR_PATH"
+    
+    # PATH SETTINGS
+    TMX_FILE_PATH = "/home/guslealma@GU.GU.SE/LT2311_volvo_project/omnigec-models/tmx/Volvo Truck Corp._en-GB_it-IT_2025-11-03-102821.tmx"
     # TMX_FILE_PATH = "none" # Use this in case you want to just use the text example sentences
-    GLOSSARY_FILE_PATH = "WRITE_YOUR_PATH"
+    GLOSSARY_FILE_PATH = "/home/guslealma@GU.GU.SE/LT2311_volvo_project/docs/all_terms.xlsx"
+
+    # CONFIGURATION SETTINGS
     backend = "google"
+    NUM_RUNS = 3
+    TOTAL_SENTENCES = 1000
+    START_INDEX = 0 # Start index (0-based): e.g. 364 corresponds to sentence 365
 
     # STEP 0 | 💬 TMX File Loading
     try:
@@ -1527,23 +1765,20 @@ if __name__ == "__main__":
         test_sentences = [text_0_en, text_1_en, text_2_en, text_3_en, text_4_en, text_5_en, text_6_en]
         test_sentences_off_translation = [text_0_it, text_1_it, text_2_it, text_3_it, text_4_it, text_5_it, text_6_it]
 
-    analyze_tmx_content(TMX_FILE_PATH)
-
-    '''
-    EXPECTED OUTPUT:
-        📊 TMX File Analysis:
-       Total translation units: 9141
-       Average English sentence length: 54.0 chars
-       Average Italian sentence length: 63.5 chars
-    
-       First 3 examples:
-       1. EN: Symbol for the Side Collision Avoidance Support
-          IT: Simbolo del Side Collision Avoidance Support
-       2. EN: To recall a previously stored load height, select the desired memory and then pu
-          IT: Per richiamare un'altezza salvata in precedenza selezionare la memoria desiderat
-       3. EN: Rolling resistance plays a major role in energy consumption.
-          IT: La resistenza al rotolamento incide notevolmente sul consumo energetico.
-    '''
+    # analyze_tmx_content(TMX_FILE_PATH)
+    # EXPECTED OUTPUT:
+    #    📊 TMX File Analysis:
+    #   Total translation units: 9141
+    #   Average English sentence length: 54.0 chars
+    #   Average Italian sentence length: 63.5 chars
+    #
+    #   First 3 examples:
+    #   1. EN: Symbol for the Side Collision Avoidance Support
+    #      IT: Simbolo del Side Collision Avoidance Support
+    #   2. EN: To recall a previously stored load height, select the desired memory and then pu
+    #      IT: Per richiamare un'altezza salvata in precedenza selezionare la memoria desiderat
+    #   3. EN: Rolling resistance plays a major role in energy consumption.
+    #      IT: La resistenza al rotolamento incide notevolmente sul consumo energetico.
 
     # STEP 1 | 📁 Glossary Loading
     glossary = load_glossary_from_excel(GLOSSARY_FILE_PATH)
@@ -1554,168 +1789,210 @@ if __name__ == "__main__":
     #        break
     #    print(f"{k} -> {v}")
 
-    '''
-    # Process each sentence from TMX
-    for i, (sentence, off_transl) in enumerate(zip(test_sentences, test_sentences_off_translation), start=1):
+
+    # Initialize results collector
+    collector = ResultsCollector()
+    collector.init_csv()
+    print(f"💾 CSV file created: {os.path.abspath(collector.csv_path)}")
+
+
+     # Process each sentence from TMX with multiple runs
+    for i, (sentence, off_transl) in enumerate(zip(
+        test_sentences[START_INDEX:START_INDEX + TOTAL_SENTENCES], 
+        test_sentences_off_translation[START_INDEX:START_INDEX + TOTAL_SENTENCES]
+    ), start=START_INDEX + 1):
+        
         print(f"\n{'='*120}")
-        print(f"TMX SENTENCE {i}/{len(test_sentences)} | 🎯 Glossary + 🤖 Raw MT + 🤯 MT + Glossary + 🧑 OmniGEC + 🧠 LLM + 🦾 OmniGEC+LLM")
-        print(f"{'='*120}")
-    '''
-    # Start index (0-based): 4 corresponds to sentence 5
-    start_index = 0
-    
-    # Process each sentence from TMX, starting from sentence 5
-    for i, (sentence, off_transl) in enumerate(zip(test_sentences[start_index:], test_sentences_off_translation[start_index:]), start=start_index + 1):
-        print(f"\n{'='*120}")
-        print(f"TMX SENTENCE {i}/{len(test_sentences)} | 🎯 Glossary + 🤖 Raw MT + 🤯 MT + Glossary + 🧑 OmniGEC + 🧠 LLM + 🦾 OmniGEC+LLM")
+        print(f"TMX SENTENCE {i}/{len(test_sentences)} 🎯 Glossary + 🤖 Raw MT + 🤯 MT + Glossary + 🧑 OmniGEC + 🧠 LLM + 🦾 OmniGEC+LLM")
         print(f"{'='*120}")
 
-        # STEP 1 | Preprocessed text
-        preprocessed = fix_saxon_genitive(sentence)
+        all_run_results = []
         
-        # STEP 2 | 🎯 Highlight glossary using Lemmatization
-        highlighted = highlight_glossary_terms_lemmatized(preprocessed, glossary)
-        # print(f"🎯 {highlighted}")
+        # Multiple runs for this sentence
+        for run in range(NUM_RUNS):
+            print(f"  🔄 Run {run + 1}/{NUM_RUNS}...")
 
-        # STEP 3 | 🤖 MT API's translation | 👈 OUTPUT 1
-        if backend == "google":
-            mt_output_it = translate_with_googletranslate(preprocessed, target_lang="it")
-        elif backend == "libre":
-            mt_output_it = translate_with_libretranslate(preprocessed, target_lang="it")
-            mt_output_sv = translate_with_libretranslate(preprocessed, target_lang="sv")
-        elif backend == "deepl":
-            deepl_api_key = "346dba35-fba1-4609-9153-43a6bd4d5756:fx" # 🚨 TO BE MODIFIED ACCORDING TO CURRENT KEY
-            mt_output_it = translate_with_deepl(preprocessed, target_lang="IT", api_key=deepl_api_key)
-            mt_output_sv = translate_with_deepl(preprocessed, target_lang="SV", api_key=deepl_api_key)
-        elif backend == "hf":
-            mt_output_it = translate_with_hf_local(preprocessed, target_lang="it")
-            mt_output_sv = translate_with_hf_local(preprocessed, target_lang="sv")
-        else:
-            # Fallback: simulate MT output
-            mt_output_it = preprocessed
-            mt_output_sv = preprocessed
+            # STEP 1 | Preprocessed text
+            preprocessed = fix_saxon_genitive(sentence)
+            
+            # STEP 2 | 🎯 Highlight glossary using Lemmatization
+            highlighted = highlight_glossary_terms_lemmatized(preprocessed, glossary)
 
+            # STEP 3 | 🤖 MT API's translation | 👈 OUTPUT 1
+            if backend == "google":
+                mt_output_it = translate_with_googletranslate(preprocessed, target_lang="it")
 
-        # STEP 4 | 🤯 Translate MT with glossary
-        hybrid_text_it, final_translation_it = translate_mt_with_highlighted_input(
-            highlighted_src=highlighted,
-            glossary=glossary,
-            target_lang="it",
-            mt_backend="google"
-        )
+            # STEP 4 | 🤯 Translate MT with glossary
+            hybrid_text_it, final_translation_it = translate_mt_with_highlighted_input(
+                highlighted_src=highlighted,
+                glossary=glossary,
+                target_lang="it",
+                mt_backend="google"
+            )
 
-        # STEP 5 | 🧑 OmniGEC - Italian Syntax Refining | 👈 OUTPUT 2
-        final_beautified_it = italian_grammar_beautification(
-            final_translation_it,  # FROM Translate MT with glossary
-            sentence               # original English sentence for context
-        )
-        
-        # STEP 6 | 🧠 LLM Enhancement (Ollama) 👈 OUTPUT 3
-        llm_enhanced_it = enhance_translation_with_ollama(
-            original_english=sentence,           # the original English sentence
-            current_translation=final_translation_it,  # FROM Translate MT with glossary
-            mt=mt_output_it,
-            target_lang="it"
-        )
+            # STEP 5 | 🧑 OmniGEC - Italian Syntax Refining | 👈 OUTPUT 2
+            final_beautified_it = italian_grammar_beautification(
+                final_translation_it,
+                sentence
+            )
+            
+            # STEP 6 | 🧠 LLM Enhancement (Ollama) 👈 OUTPUT 3
+            llm_enhanced_it = enhance_translation_with_ollama(
+                original_english=sentence,
+                current_translation=final_translation_it,
+                mt=mt_output_it,
+                target_lang="it"
+            )
 
-        # STEP 7 | 🧑+🧠 OmniGEC+LLM (preparation to OUTPUT 4)
-        omniGEC_llm_enhanced_it = enhance_translation_with_ollama(
-            original_english=sentence,           # the original English sentence
-            current_translation=final_beautified_it,  # FROM OmniGEC
-            mt=mt_output_it,
-            target_lang="it"
-        )
+            # STEP 7 | 🧑+🧠 OmniGEC+LLM (preparation to OUTPUT 4)
+            omniGEC_llm_enhanced_it = enhance_translation_with_ollama(
+                original_english=sentence,
+                current_translation=final_beautified_it,
+                mt=mt_output_it,
+                target_lang="it"
+            )
 
-        # STEP 8 | 🦾 OmniGEC+LLM | 👈 OUTPUT 4
-        llm_enhanced_fixed = quick_fix_translation(omniGEC_llm_enhanced_it, sentence, glossary)
+            # STEP 8 | 🦾 OmniGEC+LLM | 👈 OUTPUT 4
+            llm_enhanced_fixed = quick_fix_translation(omniGEC_llm_enhanced_it, sentence, glossary)
 
-        # STEP 9 | 📊 Evaluation Metrics
+            # STEP 9 | 📊 Evaluation Metrics
+            bleu_raw_mt = compute_bleu(off_transl, mt_output_it)
+            bleu_omni = compute_bleu(off_transl, final_beautified_it)
+            bleu_llm = compute_bleu(off_transl, llm_enhanced_it)
+            bleu_llm_fixed = compute_bleu(off_transl, llm_enhanced_fixed)
+            
+            rouge_raw_mt = compute_rouge(off_transl, mt_output_it)
+            rouge_omni = compute_rouge(off_transl, final_beautified_it)
+            rouge_llm = compute_rouge(off_transl, llm_enhanced_it)
+            rouge_llm_fixed = compute_rouge(off_transl, llm_enhanced_fixed)
 
-        # 🤖 MT API's translation
-        bleu1_raw_mt = compute_bleu(off_transl, mt_output_it, ngram=1)
-        bleu_raw_mt = compute_bleu(off_transl, mt_output_it)
+            bert_raw_mt = compute_bertscore(off_transl, mt_output_it, lang="it")
+            bert_omni = compute_bertscore(off_transl, final_beautified_it, lang="it")
+            bert_llm = compute_bertscore(off_transl, llm_enhanced_it, lang="it")
+            bert_llm_fixed = compute_bertscore(off_transl, llm_enhanced_fixed, lang="it")
 
-        # 🧑 OmniGEC - Italian Syntax Refining
-        bleu1_omni = compute_bleu(off_transl, final_beautified_it, ngram=1)
-        bleu_omni = compute_bleu(off_transl, final_beautified_it)
-        
-        # 🧠 LLM Enhancement (Ollama)
-        bleu1_llm = compute_bleu(off_transl, llm_enhanced_it, ngram=1)
-        bleu_llm = compute_bleu(off_transl, llm_enhanced_it)
+            treu_raw_mt = compute_treu_metric(off_transl, mt_output_it, glossary, "it")
+            treu_omni = compute_treu_metric(off_transl, final_beautified_it, glossary, "it")
+            treu_llm = compute_treu_metric(off_transl, llm_enhanced_it, glossary, "it")
+            treu_llm_fixed = compute_treu_metric(off_transl, llm_enhanced_fixed, glossary, "it")
 
-        # 🦾 OmniGEC+LLM
-        bleu1_llm_fixed = compute_bleu(off_transl, llm_enhanced_fixed, ngram=1)
-        bleu_llm_fixed = compute_bleu(off_transl, llm_enhanced_fixed)
-        
-        # ROUGE
-        rouge_raw_mt = compute_rouge(off_transl, mt_output_it)
-        rouge_omni = compute_rouge(off_transl, final_beautified_it)
-        rouge_llm = compute_rouge(off_transl, llm_enhanced_it)
-        rouge_llm_fixed = compute_rouge(off_transl, llm_enhanced_fixed) 
+            # Store run data
+            run_data = {
+                "sentence_id": i,
+                "run_id": run,
+                "english_sentence": sentence,
+                "official_translation": off_transl,
+                "raw_mt": mt_output_it,
+                "mt_glossary": final_translation_it,
+                "omnigec": final_beautified_it,
+                "llm": llm_enhanced_it,
+                "omnigec_llm": llm_enhanced_fixed,
+                "bleu_raw_mt": bleu_raw_mt,
+                "bleu_omnigec": bleu_omni,
+                "bleu_llm": bleu_llm,
+                "bleu_omnigec_llm": bleu_llm_fixed,
+                "bert_raw_mt": bert_raw_mt,
+                "bert_omnigec": bert_omni,
+                "bert_llm": bert_llm,
+                "bert_omnigec_llm": bert_llm_fixed,
+                "treu_f1_raw_mt": treu_raw_mt["treu_f1"],
+                "treu_f1_omnigec": treu_omni["treu_f1"],
+                "treu_f1_llm": treu_llm["treu_f1"],
+                "treu_f1_omnigec_llm": treu_llm_fixed["treu_f1"],
+                "rougeL_raw_mt": rouge_raw_mt["rougeL"],
+                "rougeL_omnigec": rouge_omni["rougeL"],
+                "rougeL_llm": rouge_llm["rougeL"],
+                "rougeL_omnigec_llm": rouge_llm_fixed["rougeL"],
+            }
+            
+            all_run_results.append(run_data)
+            collector.save_sentence_results(run_data)
 
-        # BERT
-        bert_raw_mt = compute_bertscore(off_transl, mt_output_it, lang="it")
-        bert_omni = compute_bertscore(off_transl, final_beautified_it, lang="it")
-        bert_llm = compute_bertscore(off_transl, llm_enhanced_it, lang="it")
-        bert_llm_fixed = compute_bertscore(off_transl, llm_enhanced_fixed, lang="it")
+        # Display results using first run as representative
+        if all_run_results:
+            first_run = all_run_results[0]
+            
+            print(f"💬 Text EN: {sentence}")
+            print(f"💬 Text EN pre-processed: {fix_saxon_genitive(sentence)}\n")
+            
+            print(f"🎯 Text EN highlighted: {highlighted}")
+            print(f"🤖 Raw MT: {first_run['raw_mt']}")
+            print(f"🤯 Hybrid EN text - IT glossary: {hybrid_text_it}")
+            print(f"🤯 MT IT text - IT glossary: {first_run['mt_glossary']}")
+            print(f"🧑 OmniGEC: {first_run['omnigec']}")
+            print(f"🧠 LLM: {first_run['llm']}")
+            print(f"🦾 OmniGEC+LLM: {first_run['omnigec_llm']}")
+            print(f"✅ Official translation: {off_transl}")
 
-        # TREU
-        treu_raw_mt = compute_treu_metric(off_transl, mt_output_it, glossary, "it")
-        treu_omni = compute_treu_metric(off_transl, final_beautified_it, glossary, "it")
-        treu_llm = compute_treu_metric(off_transl, llm_enhanced_it, glossary, "it")
-        treu_llm_fixed = compute_treu_metric(off_transl, llm_enhanced_fixed, glossary, "it")    
+            # Calculate average metrics across runs
+            avg_results = {}
+            metrics_to_avg = ['bleu_raw_mt', 'bleu_omnigec', 'bleu_llm', 'bleu_omnigec_llm',
+                            'bert_raw_mt', 'bert_omnigec', 'bert_llm', 'bert_omnigec_llm',
+                            'treu_f1_raw_mt', 'treu_f1_omnigec', 'treu_f1_llm', 'treu_f1_omnigec_llm',
+                            'rougeL_raw_mt', 'rougeL_omnigec', 'rougeL_llm', 'rougeL_omnigec_llm']
+            
+            for metric in metrics_to_avg:
+                values = [run[metric] for run in all_run_results]
+                avg_results[metric] = statistics.mean(values) if values else 0
 
-        
-        
-        print(f"💬 Text EN: {sentence}")
-        print(f"💬 Text EN pre-processed: {fix_saxon_genitive(sentence)}\n")
-        
-        print(f"🎯 Text EN highlighted: {highlighted}")
-        
-        print(f"🤖 Raw MT: {mt_output_it}") # OUTPUT 1
-        
-        print(f"🤯 Hybrid EN text - IT glossary: {hybrid_text_it}")
-        print(f"🤯 MT IT text - IT glossary: {final_translation_it}")
-        
-        print(f"🧑 OmniGEC: {final_beautified_it}") # 👈 OUTPUT 2
-        print(f"🧠 LLM: {llm_enhanced_it}") # 👈 OUTPUT 3
-
-        print(f"🦾 OmniGEC+LLM: {llm_enhanced_fixed}") # 👈 OUTPUT 4
-        
-        print(f"✅ Official translation: {off_transl}")
-
+                    # Display averaged metrics
         print(f"\n{'='*80}")
-        print(f"📊 COMPREHENSIVE EVALUATION METRICS")
+        print(f"📊 AVERAGED EVALUATION METRICS ({NUM_RUNS} runs)")
         print(f"{'='*80}")
         
-        # Calculate the additional metrics
-        bleu_omni = compute_bleu(off_transl, final_beautified_it)
-        bert_omni = compute_bertscore(off_transl, final_beautified_it, lang="it")
-        treu_omni = compute_treu_metric(off_transl, final_beautified_it, glossary, "it")
-        
-        bleu_llm = compute_bleu(off_transl, llm_enhanced_it)
-        bert_llm = compute_bertscore(off_transl, llm_enhanced_it, lang="it")
-        treu_llm = compute_treu_metric(off_transl, llm_enhanced_it, glossary, "it")
-        
-        headers = ["Approach", "BLEU-4", "BERTScore", "TREU F1", "Avg Score"]
-        approaches_data = [
-            ["🤖 Raw MT", f"{bleu_raw_mt}%", f"{bert_raw_mt}%", f"{treu_raw_mt['treu_f1']}%", f"{(bleu_raw_mt + bert_raw_mt + treu_raw_mt['treu_f1'])/3:.1f}%"],
-            ["🧑 OmniGEC", f"{bleu_omni}%", f"{bert_omni}%", f"{treu_omni['treu_f1']}%", f"{(bleu_omni + bert_omni + treu_omni['treu_f1'])/3:.1f}%"],
-            ["🧠 LLM", f"{bleu_llm}%", f"{bert_llm}%", f"{treu_llm['treu_f1']}%", f"{(bleu_llm + bert_llm + treu_llm['treu_f1'])/3:.1f}%"],
-            ["🦾 OmniGEC+LLM", f"{bleu_llm_fixed}%", f"{bert_llm_fixed}%", f"{treu_llm_fixed['treu_f1']}%", f"{(bleu_llm_fixed + bert_llm_fixed + treu_llm_fixed['treu_f1'])/3:.1f}%"]
+        approaches_display = [
+            ("🤖 Raw MT", avg_results['bleu_raw_mt'], avg_results['rougeL_raw_mt'], avg_results['bert_raw_mt'], avg_results['treu_f1_raw_mt']),
+            ("🧑 OmniGEC", avg_results['bleu_omnigec'], avg_results['rougeL_omnigec'], avg_results['bert_omnigec'], avg_results['treu_f1_omnigec']),
+            ("🧠 LLM", avg_results['bleu_llm'], avg_results['rougeL_llm'], avg_results['bert_llm'], avg_results['treu_f1_llm']),
+            ("🦾 OmniGEC+LLM", avg_results['bleu_omnigec_llm'], avg_results['rougeL_omnigec_llm'], avg_results['bert_omnigec_llm'], avg_results['treu_f1_omnigec_llm'])
         ]
         
-        print(f"{headers[0]:<15} {headers[1]:<10} {headers[2]:<12} {headers[3]:<10} {headers[4]:<10}")
-        print(f"{'─'*60}")
-        for row in approaches_data:
-            print(f"{row[0]:<15} {row[1]:<10} {row[2]:<12} {row[3]:<10} {row[4]:<10}")
+        # Calculate averages and find best
+        display_data = []
+        best_avg = 0
+        best_approach_name = ""
         
-        # Find best overall
-        best_avg = max([(row[0], float(row[4].rstrip('%'))) for row in approaches_data], key=lambda x: x[1])
-        print(f"\n🏆 Best Overall: {best_avg[0]} ({best_avg[1]:.1f}% average)")
+        for approach_name, bleu, rougeL, bert, treu in approaches_display:
+            avg_score = (bleu + rougeL + bert + treu) / 4
+            display_data.append([approach_name, f"{bleu:.1f}%", f"{rougeL:.1f}%", f"{bert:.1f}%", f"{treu:.1f}%", f"{avg_score:.1f}%"])
+            
+            if avg_score > best_avg:
+                best_avg = avg_score
+                best_approach_name = approach_name
+        
+        headers = ["Approach", "BLEU", "ROUGE-L", "BERTScore", "TREU F1", "Avg"]
+        print(f"{headers[0]:<15} {headers[1]:<8} {headers[2]:<10} {headers[3]:<10} {headers[4]:<10} {headers[5]:<10}")
+        print(f"{'─'*70}")
+        for row in display_data:
+            print(f"{row[0]:<15} {row[1]:<8} {row[2]:<10} {row[3]:<10} {row[4]:<10} {row[5]:<10}")
+        
+        print(f"\n🏆 Best for this sentence: {best_approach_name} ({best_avg:.1f}% average)")
 
-        # Show injected terms for each approach
-        print(f"\n🎯 INJECTED GLOSSARY TERMS")
+        # ============ ADD THE VARIATION DISPLAY RIGHT HERE ============
+        # Enhanced sentence-level variation display
+        if len(all_run_results) > 1:
+            print(f"\n📊 SENTENCE-LEVEL VARIATION ({NUM_RUNS} runs):")
+            print(f"{'-'*60}")
+            
+            for approach in ["raw_mt", "omnigec", "llm", "omnigec_llm"]:
+                bleu_values = [run[f"bleu_{approach}"] for run in all_run_results]
+                rouge_values = [run[f"rougeL_{approach}"] for run in all_run_results]
+                bert_values = [run[f"bert_{approach}"] for run in all_run_results]
+                treu_values = [run[f"treu_f1_{approach}"] for run in all_run_results]
+                avg_values = [run[f"avg_{approach}"] for run in all_run_results]
+                
+                if bleu_values:
+                    bleu_var = f"±{statistics.stdev(bleu_values):.1f}" if len(bleu_values) > 1 else "N/A"
+                    rouge_var = f"±{statistics.stdev(rouge_values):.1f}" if len(rouge_values) > 1 else "N/A"
+                    bert_var = f"±{statistics.stdev(bert_values):.1f}" if len(bert_values) > 1 else "N/A"
+                    treu_var = f"±{statistics.stdev(treu_values):.1f}" if len(treu_values) > 1 else "N/A"
+                    avg_var = f"±{statistics.stdev(avg_values):.1f}" if len(avg_values) > 1 else "N/A"
+                    
+                    print(f"  {approach}: BLEU{bleu_var} ROUGE{rouge_var} BERT{bert_var} TREU{treu_var} AVG{avg_var}")
+        # ============ END OF ADDED CODE ============
+
+        # Show injected terms using first run
+        print(f"\n🎯 INJECTED GLOSSARY TERMS (Run 1)")
         print(f"{'─'*80}")
         approaches = [
             ("🤖 Raw MT", treu_raw_mt),
@@ -1729,5 +2006,19 @@ if __name__ == "__main__":
                 print(f"{approach_name}: {', '.join(treu_data['injected_terms'])}")
             else:
                 print(f"{approach_name}: None")
+
+    # Final statistics
+    print(f"\n{'='*80}")
+    print("🎯 FINAL SUMMARY")
+    print(f"{'='*80}")
+    print(f"Total sentences processed: {TOTAL_SENTENCES}")
+    print(f"Total runs executed: {TOTAL_SENTENCES * NUM_RUNS}")
+    print(f"Starting index: {START_INDEX}")
+    print(f"Ending index: {START_INDEX + TOTAL_SENTENCES - 1}")
+    
+    collector.print_statistics()
+    
+    print(f"\n💾 All results saved to: {collector.csv_path}")
+    print("✅ Evaluation complete!")
 
 
