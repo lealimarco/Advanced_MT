@@ -299,7 +299,7 @@ def fix_saxon_genitive(src_text: str) -> str:
     COMPREHENSIVE possessive form fixing for Italian translation.
     Converts "X's Y" -> "Y of X" for better Italian syntax.
     Stops at articles and prepositions to avoid over-matching.
-    N.B. Warning: for istance, if in the text is used 's like abbrevation of the verb be, this function could lead to errors.
+    N.B. Warning: for instance, if in the text is used 's like abbrevation of the verb be, this function could lead to errors.
     """
     # print(f"Processing possessive forms in: {src_text}")
     
@@ -2020,5 +2020,6 @@ if __name__ == "__main__":
     
     print(f"\n💾 All results saved to: {collector.csv_path}")
     print("✅ Evaluation complete!")
+
 
 
