@@ -308,6 +308,8 @@ def fix_saxon_genitive(src_text: str) -> str:
     
     # Pattern 1: "the truck's service cover" -> "the service cover of the truck"
     possessive_pattern1 = r'(the|a|an)\s+(\w+)\'s\s+(\w+(?:\s+\w+)*?)(?=\s+(?:and|or|with|for|of|the|a|an|in|on|at|by|$))'
+    # BUG-FIX improvement
+    # possessive_pattern1 = r'(the|a|an)\s+(\w+)\'s\s+(\w+(?:\s+\w+)*?)(?=\s*(?:and|or|with|for|of|the|a|an|in|on|at|by|[.,;!?]|$))'
     
     def replace_possessive1(match):
         article = match.group(1)
@@ -320,6 +322,8 @@ def fix_saxon_genitive(src_text: str) -> str:
     
     # Pattern 2: "truck's service cover" -> "service cover of the truck"
     possessive_pattern2 = r'\b(\w+)\'s\s+(\w+(?:\s+\w+)*?)(?=\s+(?:and|or|with|for|of|the|a|an|in|on|at|by|$))'
+    # BUG-FIX improvement
+    # possessive_pattern2 = r'\b(\w+)\'s\s+(\w+(?:\s+\w+)*?)(?=\s*(?:and|or|with|for|of|the|a|an|in|on|at|by|[.,;!?]|$))'
     
     def replace_possessive2(match):
         possessor = match.group(1)
@@ -2020,6 +2024,7 @@ if __name__ == "__main__":
     
     print(f"\n💾 All results saved to: {collector.csv_path}")
     print("✅ Evaluation complete!")
+
 
 
 
